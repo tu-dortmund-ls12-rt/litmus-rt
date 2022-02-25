@@ -45,6 +45,8 @@ struct control_page {
 	lt_t release;  /* Release time of current job */
 	uint64_t job_index; /* Job sequence number of current job */
 
+	uint32_t end_segment; /* Flag indicating that next suspension ends segment */
+
 	/* to be extended */
 };
 
@@ -57,6 +59,7 @@ struct control_page {
 #define LITMUS_CP_OFFSET_DEADLINE	32
 #define LITMUS_CP_OFFSET_RELEASE	40
 #define LITMUS_CP_OFFSET_JOB_INDEX	48
+#define LITMUS_CP_OFFSET_END_SEGMENT 56
 
 /* System call emulation via ioctl() */
 
