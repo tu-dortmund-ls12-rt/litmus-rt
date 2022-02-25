@@ -168,6 +168,14 @@ struct rt_job {
 	 * -> used for tracing sporadic tasks. */
 	lt_t	last_suspension;
 #endif
+
+	/* Which segment of this job is currently executing 
+	 * NOTE: Other values are exposed to userspace via the control page.
+	 * This is not yet implemented for the segment_no.
+	 * NOTE: This struct is included in the rt_param, which has a note about explicit
+	 * setup, see if this is required for segment_no as well
+	 */
+	unsigned int segment_no;
 };
 
 struct pfair_param;
