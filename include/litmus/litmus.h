@@ -72,6 +72,8 @@ int litmus_be_migrate_to(int cpu);
 #define get_priority(t) 	(tsk_rt(t)->task_params.priority)
 #define get_class(t)        (tsk_rt(t)->task_params.cls)
 #define get_release_policy(t) (tsk_rt(t)->task_params.release_policy)
+#define get_num_segments(t) (tsk_rt(t)->task_params.num_segments)
+#define get_exec_costs(t) 	(tsk_rt(t)->task_params.exec_costs)
 
 /* job_param macros */
 #define get_exec_time(t)    (tsk_rt(t)->job_params.exec_time)

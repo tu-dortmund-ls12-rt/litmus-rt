@@ -122,6 +122,13 @@ struct rt_task {
 	task_class_t	cls;
 	budget_policy_t  budget_policy;  /* ignored by pfair */
 	release_policy_t release_policy;
+
+	/* support for segmented tasks */
+	
+	/* number of computation segments of this task */
+	unsigned int num_segments;
+	/* wcet of computation segments */
+	lt_t exec_costs[16];
 };
 
 /* don't export internal data structures to user space (liblitmus) */
