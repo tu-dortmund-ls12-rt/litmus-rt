@@ -329,13 +329,11 @@ static void psfp_task_wake_up(struct task_struct *task)
 	psfp_domain_t*		psfp = task_psfp(task);
 	lt_t			now;
 
-	/* Advance to next segment if next segment flag is set */
-	if (has_control_page(task) && get_control_page(task)->end_segment) {
-		tsk_rt(task)->job_params.segment_no++;
-	}
-	//BUG_ON(tsk_rt(task)->job_params.segment_no >= tsk_rt(task)->task_params.num_segments);
 
-	TRACE_TASK(task, "wake_up at %llu (current segment: %d)\n", litmus_clock(), tsk_rt(task)->job_params.segment_no);
+	TRACE_TASK(task, "wake_up at %llu (current segment: %i, current_priority: %i)\n",
+		litmus_clock(),
+		tsk_rt(task)->job_params.segment_no,
+		tsk_rt(task)->task_params.priority);
 	raw_spin_lock_irqsave(&psfp->slock, flags);
 
 #ifdef CONFIG_LITMUS_LOCKING
@@ -386,6 +384,20 @@ static void psfp_task_block(struct task_struct *t)
 {
 	/* only running tasks can block, thus t is in no queue */
 	TRACE_TASK(t, "block at %llu, state=%d\n", litmus_clock(), t->state);
+
+	/* Advance to next segment if next segment flag is set */
+	if (has_control_page(t) && get_control_page(t)->end_segment) {
+		tsk_rt(t)->job_params.segment_no++;
+		get_control_page(t)->end_segment = 0;
+
+		/* Change segment priority. This is safe as the task is not currently
+		 * queued and thus not part of any bheap. The task will be requeued with
+		 * its new priority once it wakes up again
+		 */
+		tsk_rt(t)->task_params.priority =
+			tsk_rt(t)->task_params.priorities[tsk_rt(t)->job_params.segment_no];
+	}
+	//BUG_ON(tsk_rt(task)->job_params.segment_no >= tsk_rt(task)->task_params.num_segments);
 
 	BUG_ON(!is_realtime(t));
 
