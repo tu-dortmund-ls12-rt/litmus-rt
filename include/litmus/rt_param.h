@@ -129,6 +129,8 @@ struct rt_task {
 	unsigned int num_segments;
 	/* wcet of computation segments */
 	lt_t exec_costs[16];
+	/* per segment priorities */
+	unsigned int priorities[16];
 };
 
 /* don't export internal data structures to user space (liblitmus) */
