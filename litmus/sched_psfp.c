@@ -136,7 +136,7 @@ static void job_completion(struct task_struct* t, int forced)
 	sched_trace_task_completion(t, forced);
 	TRACE_TASK(t, "job_completion(forced=%d, segment=%d, total_segments=%d).\n", forced, 
 		tsk_rt(t)->job_params.segment_no, 
-		tsk_rt(t)->task_params.num_segments - 1);
+		tsk_rt(t)->task_params.num_segments);
 
 	tsk_rt(t)->completed = 0;
 	tsk_rt(t)->job_params.segment_no = 0;
