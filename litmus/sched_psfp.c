@@ -398,6 +398,8 @@ static void psfp_task_block(struct task_struct *t)
 		 */
 		tsk_rt(t)->task_params.priority =
 			tsk_rt(t)->task_params.priorities[tsk_rt(t)->job_params.segment_no];
+
+		TRACE_TASK(t, "advance to segment %d\n", tsk_rt(t)->job_params.segment_no);
 	}
 	//BUG_ON(tsk_rt(task)->job_params.segment_no >= tsk_rt(task)->task_params.num_segments);
 
