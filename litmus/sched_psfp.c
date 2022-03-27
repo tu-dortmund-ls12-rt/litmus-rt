@@ -385,24 +385,6 @@ static void psfp_task_block(struct task_struct *t)
 	/* only running tasks can block, thus t is in no queue */
 	TRACE_TASK(t, "block at %llu, state=%d\n", litmus_clock(), t->state);
 
-	/* Advance to next segment if next segment flag is set */
-	if (has_control_page(t) && get_control_page(t)->end_segment) {
-		tsk_rt(t)->job_params.segment_no++;
-
-		get_control_page(t)->end_segment = 0;
-		get_control_page(t)->segment_index = tsk_rt(t)->job_params.segment_no;
-
-		/* Change segment priority. This is safe as the task is not currently
-		 * queued and thus not part of any bheap. The task will be requeued with
-		 * its new priority once it wakes up again
-		 */
-		tsk_rt(t)->task_params.priority =
-			tsk_rt(t)->task_params.priorities[tsk_rt(t)->job_params.segment_no];
-
-		TRACE_TASK(t, "advance to segment %d\n", tsk_rt(t)->job_params.segment_no);
-	}
-	//BUG_ON(tsk_rt(task)->job_params.segment_no >= tsk_rt(task)->task_params.num_segments);
-
 	BUG_ON(!is_realtime(t));
 
 	/* If this task blocked normally, it shouldn't be queued. The exception is
@@ -437,6 +419,24 @@ static void psfp_task_exit(struct task_struct * t)
 	TRACE_TASK(t, "RIP, now reschedule\n");
 
 	raw_spin_unlock_irqrestore(&psfp->slock, flags);
+}
+
+static long psfp_end_segment(struct task_struct* t)
+{
+	tsk_rt(t)->job_params.segment_no++;
+
+	get_control_page(t)->end_segment = 0;
+	get_control_page(t)->segment_index = tsk_rt(t)->job_params.segment_no;
+
+	/* Change segment priority. This is safe as the task is not currently
+		* queued and thus not part of any bheap. The task will be requeued with
+		* its new priority once it wakes up again
+		*/
+	tsk_rt(t)->task_params.priority =
+		tsk_rt(t)->task_params.priorities[tsk_rt(t)->job_params.segment_no];
+
+	TRACE_TASK(t, "advance to segment %d\n", tsk_rt(t)->job_params.segment_no);
+	return 0;
 }
 
 #ifdef CONFIG_LITMUS_LOCKING
@@ -2064,6 +2064,7 @@ static struct sched_plugin psfp_plugin __cacheline_aligned_in_smp = {
 	.allocate_lock		= psfp_allocate_lock,
 	.finish_switch		= psfp_finish_switch,
 #endif
+	.end_segment		= psfp_end_segment,
 };
 
 

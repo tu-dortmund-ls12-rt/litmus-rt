@@ -224,6 +224,10 @@ static void dequeue_task_litmus(struct rq *rq, struct task_struct *p,
 		tsk_rt(p)->job_params.last_suspension = litmus_clock();
 #endif
 		litmus->task_block(p);
+
+		if (has_control_page(p) && get_control_page(p)->end_segment) {
+			litmus->end_segment(p);
+		}
 		tsk_rt(p)->present = 0;
 		sched_trace_task_block(p);
 

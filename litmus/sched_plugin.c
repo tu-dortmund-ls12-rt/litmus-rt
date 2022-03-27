@@ -175,6 +175,16 @@ static long litmus_dummy_reservation_destroy(unsigned int reservation_id, int cp
 	return -ENOSYS;
 }
 
+static long litmus_dummy_begin_segment(struct task_struct* tsk)
+{
+	return 0;
+}
+
+static long litmus_dummy_end_segment(struct task_struct* tsk)
+{
+	return 0;
+}
+
 /* The default scheduler plugin. It doesn't do anything and lets Linux do its
  * job.
  */
@@ -199,6 +209,8 @@ struct sched_plugin linux_sched_plugin = {
 #endif
 	.admit_task = litmus_dummy_admit_task,
 	.fork_task = litmus_dummy_fork_task,
+	.begin_segment = litmus_dummy_begin_segment,
+	.end_segment = litmus_dummy_end_segment,
 };
 
 /*
@@ -246,6 +258,8 @@ int register_sched_plugin(struct sched_plugin* plugin)
 	CHECK(synchronous_release_at);
 	CHECK(reservation_destroy);
 	CHECK(reservation_create);
+	CHECK(begin_segment);
+	CHECK(end_segment);
 
 	if (!plugin->wait_for_release_at)
 		plugin->wait_for_release_at = default_wait_for_release_at;

@@ -114,6 +114,10 @@ typedef void (*current_budget_t)(lt_t *used_so_far, lt_t *remaining);
 typedef long (*reservation_create_t)(int reservation_type, void* __user config);
 typedef long (*reservation_destroy_t)(unsigned int reservation_id, int cpu);
 
+/******************** segment changes *************************/
+typedef long (*begin_segment_t)(struct task_struct* tsk);
+typedef long (*end_segment_t)(struct task_struct* tsk);
+
 /************************ misc routines ***********************/
 
 
@@ -160,6 +164,11 @@ struct sched_plugin {
 	/* Reservation support */
 	reservation_create_t	reservation_create;
 	reservation_destroy_t	reservation_destroy;
+
+	/* Segmented task support */
+	begin_segment_t		begin_segment;
+	end_segment_t		end_segment;
+
 
 #ifdef CONFIG_LITMUS_LOCKING
 	/*	locking protocols	*/

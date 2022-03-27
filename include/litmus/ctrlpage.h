@@ -79,6 +79,7 @@ typedef enum {
 	LRT_wait_for_ts_release,
 	LRT_release_ts,
 	LRT_get_current_budget,
+	LRT_begin_segment,
 } litmus_syscall_id_t;
 
 union litmus_syscall_args {

@@ -134,6 +134,7 @@ asmlinkage long sys_litmus_unlock(int lock_od);
 asmlinkage long sys_wait_for_job_release(unsigned int job);
 asmlinkage long sys_wait_for_ts_release(void);
 asmlinkage long sys_release_ts(lt_t __user *__when);
+asmlinkage long sys_begin_segment(void);
 
 static long litmus_ctrl_ioctl(struct file *filp,
 	unsigned int cmd, unsigned long arg)
@@ -211,6 +212,9 @@ static long litmus_ctrl_ioctl(struct file *filp,
 
 	case LRT_release_ts:
 		return sys_release_ts((lt_t __user *) arg);
+
+	case LRT_begin_segment:
+		return sys_begin_segment();
 
 	default:
 		printk(KERN_DEBUG "ctrldev: strange ioctl (%u, %lu)\n", cmd, arg);

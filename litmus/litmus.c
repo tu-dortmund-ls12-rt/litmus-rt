@@ -327,6 +327,14 @@ asmlinkage long sys_reservation_destroy(unsigned int reservation_id, int cpu)
 	return litmus->reservation_destroy(reservation_id, cpu);
 }
 
+asmlinkage long sys_begin_segment(void)
+{
+	if (!is_realtime(current)) {
+		return -EINVAL;
+	}
+	return litmus->begin_segment(current);
+}
+
 /* p is a real-time task. Re-init its state as a best-effort task. */
 static void reinit_litmus_state(struct task_struct* p, int restore)
 {
