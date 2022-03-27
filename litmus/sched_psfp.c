@@ -388,7 +388,9 @@ static void psfp_task_block(struct task_struct *t)
 	/* Advance to next segment if next segment flag is set */
 	if (has_control_page(t) && get_control_page(t)->end_segment) {
 		tsk_rt(t)->job_params.segment_no++;
+
 		get_control_page(t)->end_segment = 0;
+		get_control_page(t)->segment_index = tsk_rt(t)->job_params.segment_no;
 
 		/* Change segment priority. This is safe as the task is not currently
 		 * queued and thus not part of any bheap. The task will be requeued with
