@@ -75,6 +75,7 @@ int litmus_be_migrate_to(int cpu);
 #define get_num_segments(t) (tsk_rt(t)->task_params.num_segments)
 #define get_exec_costs(t) 	(tsk_rt(t)->task_params.exec_costs)
 #define get_priorities(t)	(tsk_rt(t)->task_params.priorities)
+#define get_release_offsets(t) (tsk_rt(t)->task_params.release_offsets)
 
 /* job_param macros */
 #define get_exec_time(t)    (tsk_rt(t)->job_params.exec_time)

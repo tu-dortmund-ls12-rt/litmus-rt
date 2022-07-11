@@ -1,5 +1,5 @@
 /*
- * litmus/sched_psfp.c
+ * litmus/sched_rtes.c
  *
  * Implementation of partitioned fixed-priority scheduling.
  * Based on PSN-EDF.
@@ -39,30 +39,30 @@ typedef struct {
  */
 #define slock domain.ready_lock
 
-} psfp_domain_t;
+} rtes_domain_t;
 
-DEFINE_PER_CPU(psfp_domain_t, psfp_domains);
+DEFINE_PER_CPU(rtes_domain_t, rtes_domains);
 
-psfp_domain_t* psfp_doms[NR_CPUS];
+rtes_domain_t* rtes_doms[NR_CPUS];
 
-#define local_psfp		(this_cpu_ptr(&psfp_domains))
-#define remote_dom(cpu)		(&per_cpu(psfp_domains, cpu).domain)
-#define remote_psfp(cpu)	(&per_cpu(psfp_domains, cpu))
+#define local_rtes		(this_cpu_ptr(&rtes_domains))
+#define remote_dom(cpu)		(&per_cpu(rtes_domains, cpu).domain)
+#define remote_rtes(cpu)	(&per_cpu(rtes_domains, cpu))
 #define task_dom(task)		remote_dom(get_partition(task))
-#define task_psfp(task)		remote_psfp(get_partition(task))
+#define task_rtes(task)		remote_rtes(get_partition(task))
 
 
 #ifdef CONFIG_LITMUS_LOCKING
 // NOTE: Renamed from fmlp_timestamp due to duplicate definition in sched_pfp.c.
 // If this is used beyond that file, i might just have broken at least
 // one locking protocoll.
-DEFINE_PER_CPU(uint64_t,psfp_fmlp_timestamp);
+DEFINE_PER_CPU(uint64_t,rtes_fmlp_timestamp);
 #endif
 
 /* we assume the lock is being held */
-static void preempt(psfp_domain_t *psfp)
+static void preempt(rtes_domain_t *rtes)
 {
-	preempt_if_preemptable(psfp->scheduled, psfp->cpu);
+	preempt_if_preemptable(rtes->scheduled, rtes->cpu);
 }
 
 static unsigned int priority_index(struct task_struct* t)
@@ -80,55 +80,55 @@ static unsigned int priority_index(struct task_struct* t)
 		return get_priority(t);
 }
 
-static void psfp_release_jobs(rt_domain_t* rt, struct bheap* tasks)
+static void rtes_release_jobs(rt_domain_t* rt, struct bheap* tasks)
 {
-	psfp_domain_t *psfp = container_of(rt, psfp_domain_t, domain);
+	rtes_domain_t *rtes = container_of(rt, rtes_domain_t, domain);
 	unsigned long flags;
 	struct task_struct* t;
 	struct bheap_node* hn;
 
-	raw_spin_lock_irqsave(&psfp->slock, flags);
+	raw_spin_lock_irqsave(&rtes->slock, flags);
 
 	while (!bheap_empty(tasks)) {
 		hn = bheap_take(fp_ready_order, tasks);
 		t = bheap2task(hn);
 		TRACE_TASK(t, "released (part:%d prio:%d)\n",
 			   get_partition(t), get_priority(t));
-		fp_prio_add(&psfp->ready_queue, t, priority_index(t));
+		fp_prio_add(&rtes->ready_queue, t, priority_index(t));
 	}
 
 	/* do we need to preempt? */
-	if (fp_higher_prio(fp_prio_peek(&psfp->ready_queue), psfp->scheduled)) {
+	if (fp_higher_prio(fp_prio_peek(&rtes->ready_queue), rtes->scheduled)) {
 		TRACE_CUR("preempted by new release\n");
-		preempt(psfp);
+		preempt(rtes);
 	}
 
-	raw_spin_unlock_irqrestore(&psfp->slock, flags);
+	raw_spin_unlock_irqrestore(&rtes->slock, flags);
 }
 
-static void psfp_preempt_check(psfp_domain_t *psfp)
+static void rtes_preempt_check(rtes_domain_t *rtes)
 {
-	if (fp_higher_prio(fp_prio_peek(&psfp->ready_queue), psfp->scheduled))
-		preempt(psfp);
+	if (fp_higher_prio(fp_prio_peek(&rtes->ready_queue), rtes->scheduled))
+		preempt(rtes);
 }
 
-static void psfp_domain_init(psfp_domain_t* psfp,
+static void rtes_domain_init(rtes_domain_t* rtes,
 			       int cpu)
 {
-	fp_domain_init(&psfp->domain, NULL, psfp_release_jobs);
-	psfp->cpu      		= cpu;
-	psfp->scheduled		= NULL;
-	fp_prio_queue_init(&psfp->ready_queue);
+	fp_domain_init(&rtes->domain, NULL, rtes_release_jobs);
+	rtes->cpu      		= cpu;
+	rtes->scheduled		= NULL;
+	fp_prio_queue_init(&rtes->ready_queue);
 }
 
-static void requeue(struct task_struct* t, psfp_domain_t *psfp)
+static void requeue(struct task_struct* t, rtes_domain_t *rtes)
 {
 	tsk_rt(t)->completed = 0;
 	if (is_released(t, litmus_clock())) {
 		TRACE_TASK(t, "add to ready\n");
-		fp_prio_add(&psfp->ready_queue, t, priority_index(t));
+		fp_prio_add(&rtes->ready_queue, t, priority_index(t));
 	} else
-		add_release(&psfp->domain, t); /* it has got to wait */
+		add_release(&rtes->domain, t); /* it has got to wait */
 }
 
 static void job_completion(struct task_struct* t, int forced)
@@ -146,31 +146,31 @@ static void job_completion(struct task_struct* t, int forced)
 		sched_trace_task_release(t);
 }
 
-static struct task_struct* psfp_schedule(struct task_struct * prev)
+static struct task_struct* rtes_schedule(struct task_struct * prev)
 {
-	psfp_domain_t* 	psfp = local_psfp;
+	rtes_domain_t* 	rtes = local_rtes;
 	struct task_struct*	next;
 
 	int out_of_time, sleep, preempt, np, exists, blocks, resched, migrate;
 
-	raw_spin_lock(&psfp->slock);
+	raw_spin_lock(&rtes->slock);
 
 	/* sanity checking
 	 * differently from gedf, when a task exits (dead)
-	 * psfp->schedule may be null and prev _is_ realtime
+	 * rtes->schedule may be null and prev _is_ realtime
 	 */
-	BUG_ON(psfp->scheduled && psfp->scheduled != prev);
-	BUG_ON(psfp->scheduled && !is_realtime(prev));
+	BUG_ON(rtes->scheduled && rtes->scheduled != prev);
+	BUG_ON(rtes->scheduled && !is_realtime(prev));
 
 	/* (0) Determine state */
-	exists      = psfp->scheduled != NULL;
+	exists      = rtes->scheduled != NULL;
 	blocks      = exists && !is_current_running();
-	out_of_time = exists && budget_enforced(psfp->scheduled)
-	                     && budget_exhausted(psfp->scheduled);
-	np 	    = exists && is_np(psfp->scheduled);
-	sleep	    = exists && is_completed(psfp->scheduled);
-	migrate     = exists && get_partition(psfp->scheduled) != psfp->cpu;
-	preempt     = !blocks && (migrate || fp_preemption_needed(&psfp->ready_queue, prev));
+	out_of_time = exists && budget_enforced(rtes->scheduled)
+	                     && budget_exhausted(rtes->scheduled);
+	np 	    = exists && is_np(rtes->scheduled);
+	sleep	    = exists && is_completed(rtes->scheduled);
+	migrate     = exists && get_partition(rtes->scheduled) != rtes->cpu;
+	preempt     = !blocks && (migrate || fp_preemption_needed(&rtes->ready_queue, prev));
 
 	/* If we need to preempt do so.
 	 * The following checks set resched to 1 in case of special
@@ -187,23 +187,23 @@ static struct task_struct* psfp_schedule(struct task_struct * prev)
 	 * Multiple calls to request_exit_np() don't hurt.
 	 */
 	if (np && (out_of_time || preempt || sleep))
-		request_exit_np(psfp->scheduled);
+		request_exit_np(rtes->scheduled);
 
 	/* Any task that is preemptable and either exhausts its execution
 	 * budget or wants to sleep completes. We may have to reschedule after
 	 * this.
 	 */
 	if (!np && (out_of_time || sleep)) {
-		job_completion(psfp->scheduled, !sleep);
+		job_completion(rtes->scheduled, !sleep);
 		resched = 1;
 	}
 
 	if (exists)
-		TRACE_TASK(psfp->scheduled, "state:%d blocks:%d oot:%d np:%d sleep:%d "
+		TRACE_TASK(rtes->scheduled, "state:%d blocks:%d oot:%d np:%d sleep:%d "
 			"mig:%d preempt:%d resched:%d on_rq:%d on_cpu:%d\n",
-			psfp->scheduled->state,
+			rtes->scheduled->state,
 			blocks, out_of_time, np, sleep, migrate, preempt, resched,
-			psfp->scheduled->on_rq, psfp->scheduled->on_cpu);
+			rtes->scheduled->on_rq, rtes->scheduled->on_cpu);
 
 	/* The final scheduling decision. Do we need to switch for some reason?
 	 * Switch if we are in RT mode and have no task or if we need to
@@ -216,11 +216,11 @@ static struct task_struct* psfp_schedule(struct task_struct * prev)
 		 * release queue (if it completed). requeue() picks
 		 * the appropriate queue.
 		 */
-		if (psfp->scheduled && !blocks  && !migrate)
-			requeue(psfp->scheduled, psfp);
-		next = fp_prio_take(&psfp->ready_queue);
+		if (rtes->scheduled && !blocks  && !migrate)
+			requeue(rtes->scheduled, rtes);
+		next = fp_prio_take(&rtes->ready_queue);
 		if (next == prev) {
-			struct task_struct *t = fp_prio_peek(&psfp->ready_queue);
+			struct task_struct *t = fp_prio_peek(&rtes->ready_queue);
 			TRACE_TASK(next, "next==prev sleep=%d oot=%d np=%d preempt=%d migrate=%d "
 				   "boost=%d empty=%d prio-idx=%u prio=%u\n",
 				   sleep, out_of_time, np, preempt, migrate,
@@ -252,9 +252,9 @@ static struct task_struct* psfp_schedule(struct task_struct * prev)
 		TRACE("becoming idle at %llu\n", litmus_clock());
 	}
 
-	psfp->scheduled = next;
+	rtes->scheduled = next;
 	sched_state_task_picked();
-	raw_spin_unlock(&psfp->slock);
+	raw_spin_unlock(&rtes->slock);
 
 	return next;
 }
@@ -262,9 +262,9 @@ static struct task_struct* psfp_schedule(struct task_struct * prev)
 #ifdef CONFIG_LITMUS_LOCKING
 
 /* prev is no longer scheduled --- see if it needs to migrate */
-static void psfp_finish_switch(struct task_struct *prev)
+static void rtes_finish_switch(struct task_struct *prev)
 {
-	psfp_domain_t *to;
+	rtes_domain_t *to;
 
 	if (is_realtime(prev))
 		TRACE_TASK(prev, "state:%d on_rq:%d on_cpu:%d\n",
@@ -276,7 +276,7 @@ static void psfp_finish_switch(struct task_struct *prev)
 		TRACE_TASK(prev, "needs to migrate from P%d to P%d\n",
 			   smp_processor_id(), get_partition(prev));
 
-		to = task_psfp(prev);
+		to = task_rtes(prev);
 
 		raw_spin_lock(&to->slock);
 
@@ -294,9 +294,9 @@ static void psfp_finish_switch(struct task_struct *prev)
 
 /*	Prepare a task for running in RT mode
  */
-static void psfp_task_new(struct task_struct * t, int on_rq, int is_scheduled)
+static void rtes_task_new(struct task_struct * t, int on_rq, int is_scheduled)
 {
-	psfp_domain_t* 	psfp = task_psfp(t);
+	rtes_domain_t* 	rtes = task_rtes(t);
 	unsigned long		flags;
 
 	TRACE_TASK(t, "P-FP: task new, cpu = %d\n",
@@ -310,23 +310,23 @@ static void psfp_task_new(struct task_struct * t, int on_rq, int is_scheduled)
 	release_at(t, litmus_clock());
 	tsk_rt(t)->job_params.segment_no = 0;
 
-	raw_spin_lock_irqsave(&psfp->slock, flags);
+	raw_spin_lock_irqsave(&rtes->slock, flags);
 	if (is_scheduled) {
 		/* there shouldn't be anything else running at the time */
-		BUG_ON(psfp->scheduled);
-		psfp->scheduled = t;
+		BUG_ON(rtes->scheduled);
+		rtes->scheduled = t;
 	} else if (on_rq) {
-		requeue(t, psfp);
+		requeue(t, rtes);
 		/* maybe we have to reschedule */
-		psfp_preempt_check(psfp);
+		rtes_preempt_check(rtes);
 	}
-	raw_spin_unlock_irqrestore(&psfp->slock, flags);
+	raw_spin_unlock_irqrestore(&rtes->slock, flags);
 }
 
-static void psfp_task_wake_up(struct task_struct *task)
+static void rtes_task_wake_up(struct task_struct *task)
 {
 	unsigned long		flags;
-	psfp_domain_t*		psfp = task_psfp(task);
+	rtes_domain_t*		rtes = task_rtes(task);
 	lt_t			now;
 
 
@@ -334,7 +334,7 @@ static void psfp_task_wake_up(struct task_struct *task)
 		litmus_clock(),
 		tsk_rt(task)->job_params.segment_no,
 		tsk_rt(task)->task_params.priority);
-	raw_spin_lock_irqsave(&psfp->slock, flags);
+	raw_spin_lock_irqsave(&rtes->slock, flags);
 
 #ifdef CONFIG_LITMUS_LOCKING
 	/* Should only be queued when processing a fake-wake up due to a
@@ -361,6 +361,7 @@ static void psfp_task_wake_up(struct task_struct *task)
 		inferred_sporadic_job_release_at(task, now);
 	}
 
+
 	/* Only add to ready queue if it is not the currently-scheduled
 	 * task. This could be the case if a task was woken up concurrently
 	 * on a remote CPU before the executing CPU got around to actually
@@ -368,40 +369,28 @@ static void psfp_task_wake_up(struct task_struct *task)
 	 * and won. Also, don't requeue if it is still queued, which can
 	 * happen under the DPCP due wake-ups racing with migrations.
 	 */
-	if (psfp->scheduled != task) {
-		requeue(task, psfp);
-		psfp_preempt_check(psfp);
+	if (rtes->scheduled != task) {
+		lt_t release = tsk_rt(task)->job_params.release;
+		unsigned int segment_no = tsk_rt(task)->job_params.segment_no;
+		tsk_rt(task)->job_params.release = release + tsk_rt(task)->task_params.release_offsets[segment_no];
+		requeue(task, rtes);
+		rtes_preempt_check(rtes);
+		tsk_rt(task)->job_params.release = release;
 	}
 
 #ifdef CONFIG_LITMUS_LOCKING
 out_unlock:
 #endif
-	raw_spin_unlock_irqrestore(&psfp->slock, flags);
+	raw_spin_unlock_irqrestore(&rtes->slock, flags);
 	TRACE_TASK(task, "wake up done\n");
 }
 
-static void psfp_task_block(struct task_struct *t)
+static void rtes_task_block(struct task_struct *t)
 {
 	/* only running tasks can block, thus t is in no queue */
 	TRACE_TASK(t, "block at %llu, state=%d\n", litmus_clock(), t->state);
 
 	BUG_ON(!is_realtime(t));
-
-	if (has_control_page(t) && get_control_page(t)->end_segment) {
-		tsk_rt(t)->job_params.segment_no++;
-
-		get_control_page(t)->end_segment = 0;
-		get_control_page(t)->segment_index = tsk_rt(t)->job_params.segment_no;
-
-		/* Change segment priority. This is safe as the task is not currently
-			* queued and thus not part of any bheap. The task will be requeued with
-			* its new priority once it wakes up again
-			*/
-		tsk_rt(t)->task_params.priority =
-			tsk_rt(t)->task_params.priorities[tsk_rt(t)->job_params.segment_no];
-
-		TRACE_TASK(t, "advance to segment %d\n", tsk_rt(t)->job_params.segment_no);
-	}
 
 	/* If this task blocked normally, it shouldn't be queued. The exception is
 	 * if this is a simulated block()/wakeup() pair from the pull-migration code path.
@@ -415,30 +404,37 @@ static void psfp_task_block(struct task_struct *t)
 #endif
 }
 
-static void psfp_task_exit(struct task_struct * t)
+static void rtes_task_exit(struct task_struct * t)
 {
 	unsigned long flags;
-	psfp_domain_t* 	psfp = task_psfp(t);
+	rtes_domain_t* 	rtes = task_rtes(t);
 	rt_domain_t*		dom;
 
-	raw_spin_lock_irqsave(&psfp->slock, flags);
+	raw_spin_lock_irqsave(&rtes->slock, flags);
 	if (is_queued(t)) {
 		BUG(); /* This currently doesn't work. */
 		/* dequeue */
 		dom  = task_dom(t);
 		remove(dom, t);
 	}
-	if (psfp->scheduled == t) {
-		psfp->scheduled = NULL;
-		preempt(psfp);
+	if (rtes->scheduled == t) {
+		rtes->scheduled = NULL;
+		preempt(rtes);
 	}
 	TRACE_TASK(t, "RIP, now reschedule\n");
 
-	raw_spin_unlock_irqrestore(&psfp->slock, flags);
+	raw_spin_unlock_irqrestore(&rtes->slock, flags);
 }
 
-static long psfp_end_segment(struct task_struct* t)
+static long rtes_end_segment(struct task_struct* t)
 {
+
+	tsk_rt(t)->job_params.segment_no++;
+
+	get_control_page(t)->end_segment = 0;
+	get_control_page(t)->segment_index = tsk_rt(t)->job_params.segment_no;
+
+	TRACE_TASK(t, "advance to segment %d\n", tsk_rt(t)->job_params.segment_no);
 	return 0;
 }
 
@@ -447,14 +443,14 @@ static long psfp_end_segment(struct task_struct* t)
 #include <litmus/fdso.h>
 #include <litmus/srp.h>
 
-static void fp_dequeue(psfp_domain_t* psfp, struct task_struct* t)
+static void fp_dequeue(rtes_domain_t* rtes, struct task_struct* t)
 {
-	BUG_ON(psfp->scheduled == t && is_queued(t));
+	BUG_ON(rtes->scheduled == t && is_queued(t));
 	if (is_queued(t))
-		fp_prio_remove(&psfp->ready_queue, t, priority_index(t));
+		fp_prio_remove(&rtes->ready_queue, t, priority_index(t));
 }
 
-static void fp_set_prio_inh(psfp_domain_t* psfp, struct task_struct* t,
+static void fp_set_prio_inh(rtes_domain_t* rtes, struct task_struct* t,
 			    struct task_struct* prio_inh)
 {
 	int requeue;
@@ -471,13 +467,13 @@ static void fp_set_prio_inh(psfp_domain_t* psfp, struct task_struct* t,
 
 	if (requeue)
 		/* first remove */
-		fp_dequeue(psfp, t);
+		fp_dequeue(rtes, t);
 
 	t->rt_param.inh_task = prio_inh;
 
 	if (requeue)
 		/* add again to the right queue */
-		fp_prio_add(&psfp->ready_queue, t, priority_index(t));
+		fp_prio_add(&rtes->ready_queue, t, priority_index(t));
 }
 
 static int effective_agent_priority(int prio)
@@ -495,9 +491,9 @@ static lt_t prio_point(int eprio)
 static void boost_priority(struct task_struct* t, lt_t priority_point)
 {
 	unsigned long		flags;
-	psfp_domain_t* 	psfp = task_psfp(t);
+	rtes_domain_t* 	rtes = task_rtes(t);
 
-	raw_spin_lock_irqsave(&psfp->slock, flags);
+	raw_spin_lock_irqsave(&rtes->slock, flags);
 
 
 	TRACE_TASK(t, "priority boosted at %llu\n", litmus_clock());
@@ -509,22 +505,22 @@ static void boost_priority(struct task_struct* t, lt_t priority_point)
 	/* Priority boosting currently only takes effect for already-scheduled
 	 * tasks. This is sufficient since priority boosting only kicks in as
 	 * part of lock acquisitions. */
-	BUG_ON(psfp->scheduled != t);
+	BUG_ON(rtes->scheduled != t);
 
-	raw_spin_unlock_irqrestore(&psfp->slock, flags);
+	raw_spin_unlock_irqrestore(&rtes->slock, flags);
 }
 
 static void unboost_priority(struct task_struct* t)
 {
 	unsigned long		flags;
-	psfp_domain_t* 	psfp = task_psfp(t);
+	rtes_domain_t* 	rtes = task_rtes(t);
 
-	raw_spin_lock_irqsave(&psfp->slock, flags);
+	raw_spin_lock_irqsave(&rtes->slock, flags);
 
 	/* Assumption: this only happens when the job is scheduled.
 	 * Exception: If t transitioned to non-real-time mode, we no longer
 	 * care abou tit. */
-	BUG_ON(psfp->scheduled != t && is_realtime(t));
+	BUG_ON(rtes->scheduled != t && is_realtime(t));
 
 	TRACE_TASK(t, "priority restored at %llu\n", litmus_clock());
 
@@ -532,15 +528,15 @@ static void unboost_priority(struct task_struct* t)
 	tsk_rt(t)->boost_start_time = 0;
 
 	/* check if this changes anything */
-	if (fp_preemption_needed(&psfp->ready_queue, psfp->scheduled))
-		preempt(psfp);
+	if (fp_preemption_needed(&rtes->ready_queue, rtes->scheduled))
+		preempt(rtes);
 
-	raw_spin_unlock_irqrestore(&psfp->slock, flags);
+	raw_spin_unlock_irqrestore(&rtes->slock, flags);
 }
 
 /* ******************** SRP support ************************ */
 
-static unsigned int psfp_get_srp_prio(struct task_struct* t)
+static unsigned int rtes_get_srp_prio(struct task_struct* t)
 {
 	return get_priority(t);
 }
@@ -565,10 +561,10 @@ static inline struct fmlp_semaphore* fmlp_from_lock(struct litmus_lock* lock)
 static inline lt_t
 fmlp_clock(void)
 {
-	return (lt_t) this_cpu_inc_return(psfp_fmlp_timestamp);
+	return (lt_t) this_cpu_inc_return(rtes_fmlp_timestamp);
 }
 
-int psfp_fmlp_lock(struct litmus_lock* l)
+int rtes_fmlp_lock(struct litmus_lock* l)
 {
 	struct task_struct* t = current;
 	struct fmlp_semaphore *sem = fmlp_from_lock(l);
@@ -633,7 +629,7 @@ int psfp_fmlp_lock(struct litmus_lock* l)
 	return 0;
 }
 
-int psfp_fmlp_unlock(struct litmus_lock* l)
+int rtes_fmlp_unlock(struct litmus_lock* l)
 {
 	struct task_struct *t = current, *next = NULL;
 	struct fmlp_semaphore *sem = fmlp_from_lock(l);
@@ -672,7 +668,7 @@ out:
 	return err;
 }
 
-int psfp_fmlp_close(struct litmus_lock* l)
+int rtes_fmlp_close(struct litmus_lock* l)
 {
 	struct task_struct *t = current;
 	struct fmlp_semaphore *sem = fmlp_from_lock(l);
@@ -687,24 +683,24 @@ int psfp_fmlp_close(struct litmus_lock* l)
 	spin_unlock_irqrestore(&sem->wait.lock, flags);
 
 	if (owner)
-		psfp_fmlp_unlock(l);
+		rtes_fmlp_unlock(l);
 
 	return 0;
 }
 
-void psfp_fmlp_free(struct litmus_lock* lock)
+void rtes_fmlp_free(struct litmus_lock* lock)
 {
 	kfree(fmlp_from_lock(lock));
 }
 
-static struct litmus_lock_ops psfp_fmlp_lock_ops = {
-	.close  = psfp_fmlp_close,
-	.lock   = psfp_fmlp_lock,
-	.unlock = psfp_fmlp_unlock,
-	.deallocate = psfp_fmlp_free,
+static struct litmus_lock_ops rtes_fmlp_lock_ops = {
+	.close  = rtes_fmlp_close,
+	.lock   = rtes_fmlp_lock,
+	.unlock = rtes_fmlp_unlock,
+	.deallocate = rtes_fmlp_free,
 };
 
-static struct litmus_lock* psfp_new_fmlp(void)
+static struct litmus_lock* rtes_new_fmlp(void)
 {
 	struct fmlp_semaphore* sem;
 
@@ -714,7 +710,7 @@ static struct litmus_lock* psfp_new_fmlp(void)
 
 	sem->owner   = NULL;
 	init_waitqueue_head(&sem->wait);
-	sem->litmus_lock.ops = &psfp_fmlp_lock_ops;
+	sem->litmus_lock.ops = &rtes_fmlp_lock_ops;
 
 	return &sem->litmus_lock;
 }
@@ -815,7 +811,7 @@ static inline struct mpcp_semaphore* mpcp_from_lock(struct litmus_lock* lock)
 	return container_of(lock, struct mpcp_semaphore, litmus_lock);
 }
 
-int psfp_mpcp_lock(struct litmus_lock* l)
+int rtes_mpcp_lock(struct litmus_lock* l)
 {
 	struct task_struct* t = current;
 	struct mpcp_semaphore *sem = mpcp_from_lock(l);
@@ -885,7 +881,7 @@ int psfp_mpcp_lock(struct litmus_lock* l)
 	return 0;
 }
 
-int psfp_mpcp_unlock(struct litmus_lock* l)
+int rtes_mpcp_unlock(struct litmus_lock* l)
 {
 	struct task_struct *t = current, *next = NULL;
 	struct mpcp_semaphore *sem = mpcp_from_lock(l);
@@ -927,7 +923,7 @@ out:
 	return err;
 }
 
-int psfp_mpcp_open(struct litmus_lock* l, void* config)
+int rtes_mpcp_open(struct litmus_lock* l, void* config)
 {
 	struct task_struct *t = current;
 	int cpu, local_cpu;
@@ -954,7 +950,7 @@ int psfp_mpcp_open(struct litmus_lock* l, void* config)
 	return 0;
 }
 
-int psfp_mpcp_close(struct litmus_lock* l)
+int rtes_mpcp_close(struct litmus_lock* l)
 {
 	struct task_struct *t = current;
 	struct mpcp_semaphore *sem = mpcp_from_lock(l);
@@ -969,25 +965,25 @@ int psfp_mpcp_close(struct litmus_lock* l)
 	spin_unlock_irqrestore(&sem->wait.lock, flags);
 
 	if (owner)
-		psfp_mpcp_unlock(l);
+		rtes_mpcp_unlock(l);
 
 	return 0;
 }
 
-void psfp_mpcp_free(struct litmus_lock* lock)
+void rtes_mpcp_free(struct litmus_lock* lock)
 {
 	kfree(mpcp_from_lock(lock));
 }
 
-static struct litmus_lock_ops psfp_mpcp_lock_ops = {
-	.close  = psfp_mpcp_close,
-	.lock   = psfp_mpcp_lock,
-	.open	= psfp_mpcp_open,
-	.unlock = psfp_mpcp_unlock,
-	.deallocate = psfp_mpcp_free,
+static struct litmus_lock_ops rtes_mpcp_lock_ops = {
+	.close  = rtes_mpcp_close,
+	.lock   = rtes_mpcp_lock,
+	.open	= rtes_mpcp_open,
+	.unlock = rtes_mpcp_unlock,
+	.deallocate = rtes_mpcp_free,
 };
 
-static struct litmus_lock* psfp_new_mpcp(int vspin)
+static struct litmus_lock* rtes_new_mpcp(int vspin)
 {
 	struct mpcp_semaphore* sem;
 	int cpu;
@@ -998,7 +994,7 @@ static struct litmus_lock* psfp_new_mpcp(int vspin)
 
 	sem->owner   = NULL;
 	init_waitqueue_head(&sem->wait);
-	sem->litmus_lock.ops = &psfp_mpcp_lock_ops;
+	sem->litmus_lock.ops = &rtes_mpcp_lock_ops;
 
 	for (cpu = 0; cpu < NR_CPUS; cpu++)
 		sem->prio_ceiling[cpu] = OMEGA_CEILING;
@@ -1097,7 +1093,7 @@ static int pcp_exceeds_ceiling(struct pcp_semaphore* ceiling,
 static void pcp_priority_inheritance(void)
 {
 	unsigned long	flags;
-	psfp_domain_t* 	psfp = local_psfp;
+	rtes_domain_t* 	rtes = local_rtes;
 
 	struct pcp_semaphore* ceiling = pcp_get_ceiling();
 	struct task_struct *blocker, *blocked;
@@ -1105,17 +1101,17 @@ static void pcp_priority_inheritance(void)
 	blocker = ceiling ?  ceiling->owner : NULL;
 	blocked = this_cpu_ptr(&pcp_state)->hp_waiter;
 
-	raw_spin_lock_irqsave(&psfp->slock, flags);
+	raw_spin_lock_irqsave(&rtes->slock, flags);
 
 	/* Current is no longer inheriting anything by default.  This should be
 	 * the currently scheduled job, and hence not currently queued.
 	 * Special case: if current stopped being a real-time task, it will no longer
-	 * be registered as psfp->scheduled. */
-	BUG_ON(current != psfp->scheduled && is_realtime(current));
+	 * be registered as rtes->scheduled. */
+	BUG_ON(current != rtes->scheduled && is_realtime(current));
 
-	fp_set_prio_inh(psfp, current, NULL);
-	fp_set_prio_inh(psfp, blocked, NULL);
-	fp_set_prio_inh(psfp, blocker, NULL);
+	fp_set_prio_inh(rtes, current, NULL);
+	fp_set_prio_inh(rtes, blocked, NULL);
+	fp_set_prio_inh(rtes, blocker, NULL);
 
 	/* Let blocking job inherit priority of blocked job, if required. */
 	if (blocker && blocked &&
@@ -1123,16 +1119,16 @@ static void pcp_priority_inheritance(void)
 		TRACE_TASK(blocker, "PCP inherits from %s/%d (prio %u -> %u) \n",
 			   blocked->comm, blocked->pid,
 			   get_priority(blocker), get_priority(blocked));
-		fp_set_prio_inh(psfp, blocker, blocked);
+		fp_set_prio_inh(rtes, blocker, blocked);
 	}
 
 	/* Check if anything changed. If the blocked job is current, then it is
 	 * just blocking and hence is going to call the scheduler anyway. */
 	if (blocked != current &&
-	    fp_higher_prio(fp_prio_peek(&psfp->ready_queue), psfp->scheduled))
-		preempt(psfp);
+	    fp_higher_prio(fp_prio_peek(&rtes->ready_queue), rtes->scheduled))
+		preempt(rtes);
 
-	raw_spin_unlock_irqrestore(&psfp->slock, flags);
+	raw_spin_unlock_irqrestore(&rtes->slock, flags);
 }
 
 /* called with preemptions off */
@@ -1273,7 +1269,7 @@ static void pcp_init_semaphore(struct pcp_semaphore* sem, int cpu)
 	sem->on_cpu = cpu;
 }
 
-int psfp_pcp_lock(struct litmus_lock* l)
+int rtes_pcp_lock(struct litmus_lock* l)
 {
 	struct task_struct* t = current;
 	struct pcp_semaphore *sem = pcp_from_lock(l);
@@ -1302,7 +1298,7 @@ int psfp_pcp_lock(struct litmus_lock* l)
 	return 0;
 }
 
-int psfp_pcp_unlock(struct litmus_lock* l)
+int rtes_pcp_unlock(struct litmus_lock* l)
 {
 	struct task_struct *t = current;
 	struct pcp_semaphore *sem = pcp_from_lock(l);
@@ -1344,7 +1340,7 @@ out:
 	return err;
 }
 
-int psfp_pcp_open(struct litmus_lock* l, void* __user config)
+int rtes_pcp_open(struct litmus_lock* l, void* __user config)
 {
 	struct task_struct *t = current;
 	struct pcp_semaphore *sem = pcp_from_lock(l);
@@ -1373,7 +1369,7 @@ int psfp_pcp_open(struct litmus_lock* l, void* __user config)
 	return 0;
 }
 
-int psfp_pcp_close(struct litmus_lock* l)
+int rtes_pcp_close(struct litmus_lock* l)
 {
 	struct task_struct *t = current;
 	struct pcp_semaphore *sem = pcp_from_lock(l);
@@ -1388,27 +1384,27 @@ int psfp_pcp_close(struct litmus_lock* l)
 	preempt_enable();
 
 	if (owner)
-		psfp_pcp_unlock(l);
+		rtes_pcp_unlock(l);
 
 	return 0;
 }
 
-void psfp_pcp_free(struct litmus_lock* lock)
+void rtes_pcp_free(struct litmus_lock* lock)
 {
 	kfree(pcp_from_lock(lock));
 }
 
 
-static struct litmus_lock_ops psfp_pcp_lock_ops = {
-	.close  = psfp_pcp_close,
-	.lock   = psfp_pcp_lock,
-	.open	= psfp_pcp_open,
-	.unlock = psfp_pcp_unlock,
-	.deallocate = psfp_pcp_free,
+static struct litmus_lock_ops rtes_pcp_lock_ops = {
+	.close  = rtes_pcp_close,
+	.lock   = rtes_pcp_lock,
+	.open	= rtes_pcp_open,
+	.unlock = rtes_pcp_unlock,
+	.deallocate = rtes_pcp_free,
 };
 
 
-static struct litmus_lock* psfp_new_pcp(int on_cpu)
+static struct litmus_lock* rtes_new_pcp(int on_cpu)
 {
 	struct pcp_semaphore* sem;
 
@@ -1416,7 +1412,7 @@ static struct litmus_lock* psfp_new_pcp(int on_cpu)
 	if (!sem)
 		return NULL;
 
-	sem->litmus_lock.ops = &psfp_pcp_lock_ops;
+	sem->litmus_lock.ops = &rtes_pcp_lock_ops;
 	pcp_init_semaphore(sem, on_cpu);
 
 	return &sem->litmus_lock;
@@ -1436,10 +1432,10 @@ static inline struct dpcp_semaphore* dpcp_from_lock(struct litmus_lock* lock)
 }
 
 /* called with preemptions disabled */
-static void psfp_migrate_to(int target_cpu)
+static void rtes_migrate_to(int target_cpu)
 {
 	struct task_struct* t = current;
-	psfp_domain_t *from;
+	rtes_domain_t *from;
 
 	if (get_partition(t) == target_cpu)
 		return;
@@ -1455,7 +1451,7 @@ static void psfp_migrate_to(int target_cpu)
 
 	local_irq_disable();
 
-	from = task_psfp(t);
+	from = task_rtes(t);
 	raw_spin_lock(&from->slock);
 
 	/* Scheduled task should not be in any ready or release queue.  Check
@@ -1487,7 +1483,7 @@ static void psfp_migrate_to(int target_cpu)
 	BUG_ON(smp_processor_id() != target_cpu && is_realtime(t));
 }
 
-int psfp_dpcp_lock(struct litmus_lock* l)
+int rtes_dpcp_lock(struct litmus_lock* l)
 {
 	struct task_struct* t = current;
 	struct dpcp_semaphore *sem = dpcp_from_lock(l);
@@ -1510,7 +1506,7 @@ int psfp_dpcp_lock(struct litmus_lock* l)
 
 	boost_priority(t, get_priority(t));
 
-	psfp_migrate_to(to);
+	rtes_migrate_to(to);
 
 	pcp_raise_ceiling(&sem->pcp, eprio);
 
@@ -1524,7 +1520,7 @@ int psfp_dpcp_lock(struct litmus_lock* l)
 	return 0;
 }
 
-int psfp_dpcp_unlock(struct litmus_lock* l)
+int rtes_dpcp_unlock(struct litmus_lock* l)
 {
 	struct task_struct *t = current;
 	struct dpcp_semaphore *sem = dpcp_from_lock(l);
@@ -1563,7 +1559,7 @@ int psfp_dpcp_unlock(struct litmus_lock* l)
 	/* we lose the benefit of priority boosting */
 	unboost_priority(t);
 
-	psfp_migrate_to(home);
+	rtes_migrate_to(home);
 
 out:
 	preempt_enable();
@@ -1571,7 +1567,7 @@ out:
 	return err;
 }
 
-int psfp_dpcp_open(struct litmus_lock* l, void* __user config)
+int rtes_dpcp_open(struct litmus_lock* l, void* __user config)
 {
 	struct task_struct *t = current;
 	struct dpcp_semaphore *sem = dpcp_from_lock(l);
@@ -1595,7 +1591,7 @@ int psfp_dpcp_open(struct litmus_lock* l, void* __user config)
 	return 0;
 }
 
-int psfp_dpcp_close(struct litmus_lock* l)
+int rtes_dpcp_close(struct litmus_lock* l)
 {
 	struct task_struct *t = current;
 	struct dpcp_semaphore *sem = dpcp_from_lock(l);
@@ -1609,25 +1605,25 @@ int psfp_dpcp_close(struct litmus_lock* l)
 	preempt_enable();
 
 	if (owner)
-		psfp_dpcp_unlock(l);
+		rtes_dpcp_unlock(l);
 
 	return 0;
 }
 
-void psfp_dpcp_free(struct litmus_lock* lock)
+void rtes_dpcp_free(struct litmus_lock* lock)
 {
 	kfree(dpcp_from_lock(lock));
 }
 
-static struct litmus_lock_ops psfp_dpcp_lock_ops = {
-	.close  = psfp_dpcp_close,
-	.lock   = psfp_dpcp_lock,
-	.open	= psfp_dpcp_open,
-	.unlock = psfp_dpcp_unlock,
-	.deallocate = psfp_dpcp_free,
+static struct litmus_lock_ops rtes_dpcp_lock_ops = {
+	.close  = rtes_dpcp_close,
+	.lock   = rtes_dpcp_lock,
+	.open	= rtes_dpcp_open,
+	.unlock = rtes_dpcp_unlock,
+	.deallocate = rtes_dpcp_free,
 };
 
-static struct litmus_lock* psfp_new_dpcp(int on_cpu)
+static struct litmus_lock* rtes_new_dpcp(int on_cpu)
 {
 	struct dpcp_semaphore* sem;
 
@@ -1635,7 +1631,7 @@ static struct litmus_lock* psfp_new_dpcp(int on_cpu)
 	if (!sem)
 		return NULL;
 
-	sem->litmus_lock.ops = &psfp_dpcp_lock_ops;
+	sem->litmus_lock.ops = &rtes_dpcp_lock_ops;
 	sem->owner_cpu = NO_CPU;
 	pcp_init_semaphore(&sem->pcp, on_cpu);
 
@@ -1664,7 +1660,7 @@ static inline struct dflp_semaphore* dflp_from_lock(struct litmus_lock* lock)
 	return container_of(lock, struct dflp_semaphore, litmus_lock);
 }
 
-int psfp_dflp_lock(struct litmus_lock* l)
+int rtes_dflp_lock(struct litmus_lock* l)
 {
 	struct task_struct* t = current;
 	struct dflp_semaphore *sem = dflp_from_lock(l);
@@ -1691,7 +1687,7 @@ int psfp_dflp_lock(struct litmus_lock* l)
 	 * our priority is boosted when we resume. */
 	boost_priority(t, time_of_request);
 
-	psfp_migrate_to(to);
+	rtes_migrate_to(to);
 
 	/* Now on the right CPU, preemptions still disabled. */
 
@@ -1745,7 +1741,7 @@ int psfp_dflp_lock(struct litmus_lock* l)
 	return 0;
 }
 
-int psfp_dflp_unlock(struct litmus_lock* l)
+int rtes_dflp_unlock(struct litmus_lock* l)
 {
 	struct task_struct *t = current, *next;
 	struct dflp_semaphore *sem = dflp_from_lock(l);
@@ -1784,7 +1780,7 @@ int psfp_dflp_unlock(struct litmus_lock* l)
 	/* we lose the benefit of priority boosting */
 	unboost_priority(t);
 
-	psfp_migrate_to(home);
+	rtes_migrate_to(home);
 
 out:
 	preempt_enable();
@@ -1792,7 +1788,7 @@ out:
 	return err;
 }
 
-int psfp_dflp_open(struct litmus_lock* l, void* __user config)
+int rtes_dflp_open(struct litmus_lock* l, void* __user config)
 {
 	struct dflp_semaphore *sem = dflp_from_lock(l);
 	int cpu;
@@ -1807,7 +1803,7 @@ int psfp_dflp_open(struct litmus_lock* l, void* __user config)
 	return 0;
 }
 
-int psfp_dflp_close(struct litmus_lock* l)
+int rtes_dflp_close(struct litmus_lock* l)
 {
 	struct task_struct *t = current;
 	struct dflp_semaphore *sem = dflp_from_lock(l);
@@ -1821,25 +1817,25 @@ int psfp_dflp_close(struct litmus_lock* l)
 	preempt_enable();
 
 	if (owner)
-		psfp_dflp_unlock(l);
+		rtes_dflp_unlock(l);
 
 	return 0;
 }
 
-void psfp_dflp_free(struct litmus_lock* lock)
+void rtes_dflp_free(struct litmus_lock* lock)
 {
 	kfree(dflp_from_lock(lock));
 }
 
-static struct litmus_lock_ops psfp_dflp_lock_ops = {
-	.close  = psfp_dflp_close,
-	.lock   = psfp_dflp_lock,
-	.open	= psfp_dflp_open,
-	.unlock = psfp_dflp_unlock,
-	.deallocate = psfp_dflp_free,
+static struct litmus_lock_ops rtes_dflp_lock_ops = {
+	.close  = rtes_dflp_close,
+	.lock   = rtes_dflp_lock,
+	.open	= rtes_dflp_open,
+	.unlock = rtes_dflp_unlock,
+	.deallocate = rtes_dflp_free,
 };
 
-static struct litmus_lock* psfp_new_dflp(int on_cpu)
+static struct litmus_lock* rtes_new_dflp(int on_cpu)
 {
 	struct dflp_semaphore* sem;
 
@@ -1847,7 +1843,7 @@ static struct litmus_lock* psfp_new_dflp(int on_cpu)
 	if (!sem)
 		return NULL;
 
-	sem->litmus_lock.ops = &psfp_dflp_lock_ops;
+	sem->litmus_lock.ops = &rtes_dflp_lock_ops;
 	sem->owner_cpu = NO_CPU;
 	sem->owner   = NULL;
 	sem->on_cpu  = on_cpu;
@@ -1860,7 +1856,7 @@ static struct litmus_lock* psfp_new_dflp(int on_cpu)
 /* **** lock constructor **** */
 
 
-static long psfp_allocate_lock(struct litmus_lock **lock, int type,
+static long rtes_allocate_lock(struct litmus_lock **lock, int type,
 				 void* __user config)
 {
 	int err = -ENXIO, cpu;
@@ -1871,7 +1867,7 @@ static long psfp_allocate_lock(struct litmus_lock **lock, int type,
 	switch (type) {
 	case FMLP_SEM:
 		/* FIFO Mutex Locking Protocol */
-		*lock = psfp_new_fmlp();
+		*lock = rtes_new_fmlp();
 		if (*lock)
 			err = 0;
 		else
@@ -1880,7 +1876,7 @@ static long psfp_allocate_lock(struct litmus_lock **lock, int type,
 
 	case MPCP_SEM:
 		/* Multiprocesor Priority Ceiling Protocol */
-		*lock = psfp_new_mpcp(0);
+		*lock = rtes_new_mpcp(0);
 		if (*lock)
 			err = 0;
 		else
@@ -1889,7 +1885,7 @@ static long psfp_allocate_lock(struct litmus_lock **lock, int type,
 
 	case MPCP_VS_SEM:
 		/* Multiprocesor Priority Ceiling Protocol with virtual spinning */
-		*lock = psfp_new_mpcp(1);
+		*lock = rtes_new_mpcp(1);
 		if (*lock)
 			err = 0;
 		else
@@ -1906,7 +1902,7 @@ static long psfp_allocate_lock(struct litmus_lock **lock, int type,
 		if (cpu >= NR_CPUS || !cpu_online(cpu))
 			return -EINVAL;
 
-		*lock = psfp_new_dpcp(cpu);
+		*lock = rtes_new_dpcp(cpu);
 		if (*lock)
 			err = 0;
 		else
@@ -1923,7 +1919,7 @@ static long psfp_allocate_lock(struct litmus_lock **lock, int type,
 		if (cpu >= NR_CPUS || !cpu_online(cpu))
 			return -EINVAL;
 
-		*lock = psfp_new_dflp(cpu);
+		*lock = rtes_new_dflp(cpu);
 		if (*lock)
 			err = 0;
 		else
@@ -1950,7 +1946,7 @@ static long psfp_allocate_lock(struct litmus_lock **lock, int type,
 		if (cpu >= NR_CPUS || !cpu_online(cpu))
 			return -EINVAL;
 
-		*lock = psfp_new_pcp(cpu);
+		*lock = rtes_new_pcp(cpu);
 		if (*lock)
 			err = 0;
 		else
@@ -1963,7 +1959,7 @@ static long psfp_allocate_lock(struct litmus_lock **lock, int type,
 
 #endif
 
-static long psfp_admit_task(struct task_struct* tsk)
+static long rtes_admit_task(struct task_struct* tsk)
 {
 	if (task_cpu(tsk) == tsk->rt_param.task_params.cpu &&
 #ifdef CONFIG_RELEASE_MASTER
@@ -1976,14 +1972,14 @@ static long psfp_admit_task(struct task_struct* tsk)
 		return -EINVAL;
 }
 
-static struct domain_proc_info psfp_domain_proc_info;
-static long psfp_get_domain_proc_info(struct domain_proc_info **ret)
+static struct domain_proc_info rtes_domain_proc_info;
+static long rtes_get_domain_proc_info(struct domain_proc_info **ret)
 {
-	*ret = &psfp_domain_proc_info;
+	*ret = &rtes_domain_proc_info;
 	return 0;
 }
 
-static void psfp_setup_domain_proc(void)
+static void rtes_setup_domain_proc(void)
 {
 	int i, cpu;
 	int release_master =
@@ -1995,15 +1991,15 @@ static void psfp_setup_domain_proc(void)
 	int num_rt_cpus = num_online_cpus() - (release_master != NO_CPU);
 	struct cd_mapping *cpu_map, *domain_map;
 
-	memset(&psfp_domain_proc_info, 0, sizeof(psfp_domain_proc_info));
-	init_domain_proc_info(&psfp_domain_proc_info, num_rt_cpus, num_rt_cpus);
-	psfp_domain_proc_info.num_cpus = num_rt_cpus;
-	psfp_domain_proc_info.num_domains = num_rt_cpus;
+	memset(&rtes_domain_proc_info, 0, sizeof(rtes_domain_proc_info));
+	init_domain_proc_info(&rtes_domain_proc_info, num_rt_cpus, num_rt_cpus);
+	rtes_domain_proc_info.num_cpus = num_rt_cpus;
+	rtes_domain_proc_info.num_domains = num_rt_cpus;
 	for (cpu = 0, i = 0; cpu < num_online_cpus(); ++cpu) {
 		if (cpu == release_master)
 			continue;
-		cpu_map = &psfp_domain_proc_info.cpu_to_domains[i];
-		domain_map = &psfp_domain_proc_info.domain_to_cpus[i];
+		cpu_map = &rtes_domain_proc_info.cpu_to_domains[i];
+		domain_map = &rtes_domain_proc_info.domain_to_cpus[i];
 
 		cpu_map->id = cpu;
 		domain_map->id = i; /* enumerate w/o counting the release master */
@@ -2013,7 +2009,7 @@ static void psfp_setup_domain_proc(void)
 	}
 }
 
-static long psfp_activate_plugin(void)
+static long rtes_activate_plugin(void)
 {
 #if defined(CONFIG_RELEASE_MASTER) || defined(CONFIG_LITMUS_LOCKING)
 	int cpu;
@@ -2026,52 +2022,52 @@ static long psfp_activate_plugin(void)
 #endif
 
 #ifdef CONFIG_LITMUS_LOCKING
-	get_srp_prio = psfp_get_srp_prio;
+	get_srp_prio = rtes_get_srp_prio;
 
 	for_each_online_cpu(cpu) {
 		init_waitqueue_head(&per_cpu(mpcpvs_vspin_wait, cpu));
 		per_cpu(mpcpvs_vspin, cpu) = NULL;
 
 		pcp_init_state(&per_cpu(pcp_state, cpu));
-		psfp_doms[cpu] = remote_psfp(cpu);
-		per_cpu(psfp_fmlp_timestamp,cpu) = 0;
+		rtes_doms[cpu] = remote_rtes(cpu);
+		per_cpu(rtes_fmlp_timestamp,cpu) = 0;
 	}
 
 #endif
 
-	psfp_setup_domain_proc();
+	rtes_setup_domain_proc();
 
 	return 0;
 }
 
-static long psfp_deactivate_plugin(void)
+static long rtes_deactivate_plugin(void)
 {
-	destroy_domain_proc_info(&psfp_domain_proc_info);
+	destroy_domain_proc_info(&rtes_domain_proc_info);
 	return 0;
 }
 
 /*	Plugin object	*/
-static struct sched_plugin psfp_plugin __cacheline_aligned_in_smp = {
-	.plugin_name		= "P-SFP",
-	.task_new		= psfp_task_new,
+static struct sched_plugin rtes_plugin __cacheline_aligned_in_smp = {
+	.plugin_name		= "P-RTES",
+	.task_new		= rtes_task_new,
 	.complete_job		= complete_job,
-	.task_exit		= psfp_task_exit,
-	.schedule		= psfp_schedule,
-	.task_wake_up		= psfp_task_wake_up,
-	.task_block		= psfp_task_block,
-	.admit_task		= psfp_admit_task,
-	.activate_plugin	= psfp_activate_plugin,
-	.deactivate_plugin	= psfp_deactivate_plugin,
-	.get_domain_proc_info	= psfp_get_domain_proc_info,
+	.task_exit		= rtes_task_exit,
+	.schedule		= rtes_schedule,
+	.task_wake_up		= rtes_task_wake_up,
+	.task_block		= rtes_task_block,
+	.admit_task		= rtes_admit_task,
+	.activate_plugin	= rtes_activate_plugin,
+	.deactivate_plugin	= rtes_deactivate_plugin,
+	.get_domain_proc_info	= rtes_get_domain_proc_info,
 #ifdef CONFIG_LITMUS_LOCKING
-	.allocate_lock		= psfp_allocate_lock,
-	.finish_switch		= psfp_finish_switch,
+	.allocate_lock		= rtes_allocate_lock,
+	.finish_switch		= rtes_finish_switch,
 #endif
-	.end_segment		= psfp_end_segment,
+	.end_segment		= rtes_end_segment,
 };
 
 
-static int __init init_psfp(void)
+static int __init init_rtes(void)
 {
 	int i;
 
@@ -2080,9 +2076,9 @@ static int __init init_psfp(void)
 	 * we cannot use num_online_cpu()
 	 */
 	for (i = 0; i < num_online_cpus(); i++) {
-		psfp_domain_init(remote_psfp(i), i);
+		rtes_domain_init(remote_rtes(i), i);
 	}
-	return register_sched_plugin(&psfp_plugin);
+	return register_sched_plugin(&rtes_plugin);
 }
 
-module_init(init_psfp);
+module_init(init_rtes);
