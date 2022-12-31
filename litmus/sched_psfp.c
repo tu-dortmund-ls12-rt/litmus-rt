@@ -437,8 +437,15 @@ static void psfp_task_exit(struct task_struct * t)
 	raw_spin_unlock_irqrestore(&psfp->slock, flags);
 }
 
+static long psfp_begin_segment(struct task_struct* t)
+{
+	TRACE_TASK(t, "Fuzzer:%d,%llu,start", t->pid, litmus_clock());
+	return 0;
+}
+
 static long psfp_end_segment(struct task_struct* t)
 {
+	TRACE_TASK(t, "Fuzzer:%d,%llu,end", t->pid, litmus_clock());
 	return 0;
 }
 
@@ -2067,6 +2074,7 @@ static struct sched_plugin psfp_plugin __cacheline_aligned_in_smp = {
 	.allocate_lock		= psfp_allocate_lock,
 	.finish_switch		= psfp_finish_switch,
 #endif
+	.begin_segment		= psfp_begin_segment,
 	.end_segment		= psfp_end_segment,
 };
 
